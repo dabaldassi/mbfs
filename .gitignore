@@ -1,0 +1,10 @@
+a.out
+image
+*.ko
+*~
+*.o
+*.mod*
+*.order
+*.symvers
+build/*
+mbclient/*
