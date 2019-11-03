@@ -1,8 +1,11 @@
+#include <linux/cred.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+
+#include "ui_file.h"
 
 #define MIN(A,B) (((A) < (B))?(A):(B))
 
@@ -37,10 +40,12 @@ void put_next_inode(struct inode * dir)
   }
 }
 
+int mbfs_file_open(struct inode * inode, struct file * file);
 static struct inode * mbfs_get_inode(struct super_block *sb,
 				     const struct inode * dir,
 				     umode_t mode,
 				     dev_t dev);
+static struct file * fp = NULL;
 
 static int mbfs_mknod(struct inode * dir, struct dentry * dentry, umode_t mode, dev_t dev)
 {
@@ -49,8 +54,9 @@ static int mbfs_mknod(struct inode * dir, struct dentry * dentry, umode_t mode, 
   int error = -ENOSPC;
 
   pr_debug("MBFS : mknod\n");
-  
+ 
   if(inode) {
+    pr_debug("%s %s\n", dentry->d_name.name, dentry->d_iname);
     d_instantiate(dentry,inode);
     dget(dentry);
     error = 0;
@@ -58,7 +64,6 @@ static int mbfs_mknod(struct inode * dir, struct dentry * dentry, umode_t mode, 
     dir->i_mtime = dir->i_ctime = ts;
     put_next_inode(inode);
   }
-
   return error;
 }
 
@@ -73,13 +78,20 @@ static int mbfs_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
   int retval = mbfs_mknod(dir,dentry,mode | S_IFDIR, 0);
   pr_debug("MBFS : mkdir\n");
   if(!retval) inc_nlink(dir);
-
   return retval;
+}
+
+struct dentry * mbfs_lookup (struct inode * i,struct dentry * d, unsigned int entier)
+{
+  pr_debug("MBFS : lookup %d\n", entier);
+  
+  return simple_lookup(i,d,entier);
 }
 
 static struct inode_operations mbfs_dir_inode_operations = {
 							    .create = mbfs_create,
-							    .lookup = simple_lookup,
+							    // .lookup = simple_lookup,
+							    .lookup = mbfs_lookup,
 							    .mkdir  = mbfs_mkdir,
 							    .mknod  = mbfs_mknod,
 							    .rmdir  = mbfs_rmdir,
@@ -91,12 +103,12 @@ static struct inode_operations mbfs_dir_inode_operations = {
 int mbfs_file_open(struct inode * inode, struct file * file)
 {
   int i = 0;
-
   pr_debug("MBFS : i_ino %ld\n", inode->i_ino);
 
   while(i < NB_INODE && inode != inode_tab[i]) ++i;
   
   file->private_data = &(buffer[i*INODE_MAX_SIZE]);
+  
   return 0;
 }
 
@@ -110,13 +122,13 @@ ssize_t mbfs_file_read(struct file * file, char __user *user_buf,
   *ppos += count;
 
   pr_debug("MBFS : read\n");
-
+  
   if(pos < 0)
     return -EINVAL;
   if(pos > 0) {
     return 0;
   }
-
+  
   if((err=copy_to_user(user_buf, file->private_data,count))) {
     pr_debug("Err read %lu bytes could not be read on %lu\n",err,count);
     return -EFAULT;
@@ -174,6 +186,8 @@ static struct inode * mbfs_get_inode(struct super_block *sb,
       inode->i_fop = &mbfs_file_operations;
   }
 
+  // inode->u.generic_ip = counter;
+
   return inode;
 }
 
@@ -184,6 +198,9 @@ static const struct super_operations mbfs_ops = {
 static int mbfs_file_super(struct super_block * sb, void * data, int silent)
 {
   struct inode * inode;
+  struct dentry * entry;
+  struct path path;
+  struct qstr name = QSTR_INIT("play",4);
 
   sb->s_op = &mbfs_ops;
   inode = mbfs_get_inode(sb,NULL,S_IFDIR | DEFAULT_MODE, 0);
@@ -191,6 +208,26 @@ static int mbfs_file_super(struct super_block * sb, void * data, int silent)
   if(!sb->s_root) 
     pr_debug("cannot get dentry root\n");
 
+  name.hash = full_name_hash(inode,name.name, name.len);
+  entry = d_alloc(sb->s_root, &name);
+
+  if(entry) {
+    pr_debug("%s\n",entry->d_iname);
+    simple_lookup(inode,entry,769);
+    mbfs_mknod(inode, entry, DEFAULT_MODE | S_IFREG, 0);
+    /* path.dentry = entry; */
+    /* fp = dentry_open(&path,O_RDWR,current_cred()); */
+    /* if(fp) { */
+    /*   // mbfs_file_open(inode, fp); */
+    /* } */
+    /* else { */
+    /*   pr_debug("Can't create file\n"); */
+    /* } */
+  }
+  else {
+    pr_debug("Cannot create play\n");
+  }
+  
   pr_debug("Mounting ok\n");
   
   return 0;
@@ -217,6 +254,7 @@ static struct file_system_type mbfs_type = {
 					    .mount    = mbfs_mount,
 					    .kill_sb  = mbfs_kill_sb,
 					    .fs_flags = FS_USERNS_MOUNT,
+					    .owner    = THIS_MODULE,
 };
 
 static int __init init_mbfs(void)
@@ -236,8 +274,8 @@ static int __init init_mbfs(void)
 static void __exit exit_mbfs(void)
 {
   const int ret = unregister_filesystem(&mbfs_type);
-
-  if(ret) pr_err("Can't unergister mbfs");
+  
+  if(ret) pr_err("Can't unregister mbfs");
   else    pr_debug("mbfs unregistered\n");
 }
 
